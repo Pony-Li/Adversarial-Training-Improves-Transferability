@@ -104,7 +104,7 @@ def build_backbone(arch: str) -> nn.Module:
     if arch == "resnet18":
         model = models.resnet18(weights=None)
     elif arch == "resnet34":
-        model = models.resnet34(weigths=None)
+        model = models.resnet34(weights=None)
     elif arch == "resnet50":
         model = models.resnet50(weights=None)
     elif arch == "wide_resnet50_2":
@@ -193,7 +193,7 @@ def main():
     parser.add_argument("--data-root", type=str, required=True,
                         help="ImageNet 根目录, 下有 train/val")
     parser.add_argument("--arch", type=str, default="resnet50",
-                        choices=["resnet18", "resnet50", "wide_resnet50_2"],
+                        choices=["resnet18", "resnet34", "resnet50", "wide_resnet50_2"],
                         help="backbone 网络结构")
     parser.add_argument("--norm", type=str, default="l2",
                         choices=["l2", "linf"],
