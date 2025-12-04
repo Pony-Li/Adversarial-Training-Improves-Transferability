@@ -22,10 +22,9 @@ This repo focuses on training **standard** and **adversarially robust** ImageNet
 - Adversarial example generation via **[torchattacks](https://github.com/Harry24k/adversarial-attacks-pytorch)**:
   - `PGDL2` for L2 norm
   - `PGD` for L∞ norm
-- ImageNet-standard preprocessing (224×224, mean/std 归一化)
-- 自动 checkpoint 管理：
-  - 每 **10 个 epoch** 保存一次快照
-  - 只要验证集精度刷新，就保存一个 `*_best.pth`
+- ImageNet-standard preprocessing (224×224, mean/std normalization)
+- Automatic checkpoint management:
+  - Save a snapshot once every **10 个 epoch**
 
 ---
 
