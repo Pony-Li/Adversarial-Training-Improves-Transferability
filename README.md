@@ -24,7 +24,7 @@ This repo focuses on training **standard** and **adversarially robust** ImageNet
   - `PGD` for L∞ norm
 - ImageNet-standard preprocessing (224×224, mean/std normalization)
 - Automatic checkpoint management:
-  - Save a snapshot once every **10 个 epoch**
+  - Save a snapshot once every **10 epochs**
 
 ---
 
