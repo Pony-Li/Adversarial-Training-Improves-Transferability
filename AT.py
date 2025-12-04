@@ -103,6 +103,8 @@ def get_loaders(data_root: str,
 def build_backbone(arch: str) -> nn.Module:
     if arch == "resnet18":
         model = models.resnet18(weights=None)
+    elif arch == "resnet34":
+        model = models.resnet34(weigths=None)
     elif arch == "resnet50":
         model = models.resnet50(weights=None)
     elif arch == "wide_resnet50_2":
