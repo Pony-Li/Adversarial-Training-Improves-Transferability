@@ -1,2 +1,2 @@
-ckpts/
+ckpts/ckpts_resnet34_l2_eps0_5
 *.pth
