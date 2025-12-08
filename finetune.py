@@ -1,46 +1,70 @@
+#!/usr/bin/env python
+# transfer_eval_ddp.py
 """
-Transfer evaluation for ImageNet-pretrained models
-(standard / adversarially trained) on downstream datasets
-under fixed-feature and full-network settings.
+Downstream transfer evaluation (fixed-feature / full-network)
+with multi-GPU DistributedDataParallel (DDP).
 
-Usage example (CIFAR-10, fixed-feature):
+Usage example:
 
-  python transfer_eval.py \
-    --data-root /data0/datasets \
-    --dataset CIFAR10 \
-    --arch resnet34 \
-    --ckpt ./ckpts_resnet34_l2_eps0_5/epoch_090_best.pth \
-    --mode fixed \
-    --batch-size 128 \
-    --metric per_sample
-
-Full-network fine-tune:
-
-  python transfer_eval.py \
-    --data-root /data0/datasets \
-    --dataset CIFAR10 \
-    --arch resnet34 \
-    --ckpt ./ckpts_resnet34_l2_eps0_5/epoch_090_best.pth \
-    --mode full \
-    --batch-size 128 \
-    --metric per_sample
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+torchrun --nproc_per_node=4 transfer_eval_ddp.py \
+  --data-root /data0/datasets \
+  --dataset CIFAR10 \
+  --arch resnet34 \
+  --ckpt ./ckpts_resnet34_l2_eps0_5/epoch_090_best.pth \
+  --mode fixed \
+  --batch-size 128 \
+  --num-workers 8 \
+  --metric per_sample
 """
 
 import argparse
 import copy
 import os
-from typing import Tuple, List, Dict
+import os.path as osp
+from typing import Tuple, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+import torch.distributed as dist
+from torch.utils.data import DataLoader, random_split, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import datasets, transforms, models
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ===========================
+# DDP utils
+# ===========================
+
+def init_distributed():
+    if not dist.is_available():
+        raise RuntimeError("torch.distributed is not available.")
+    if dist.is_initialized():
+        return
+
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+    return device, rank, world_size, local_rank
 
 
+def is_main_process(rank: int) -> bool:
+    return rank == 0
+
+
+def barrier():
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+# ===========================
 # Normalization wrapper
+# ===========================
+
 class NormalizedModel(nn.Module):
     """
     Wrap backbone with ImageNet normalization.
@@ -60,12 +84,11 @@ class NormalizedModel(nn.Module):
         return self.model(x)
 
 
-# Backbone construction
+# ===========================
+# Backbone construction & loading
+# ===========================
+
 def build_backbone(arch: str, num_classes: int = 1000) -> nn.Module:
-    """
-    Build a torchvision backbone with a fc layer for ImageNet (1000 classes).
-    We will replace the fc layer later for downstream tasks.
-    """
     if arch == "resnet18":
         model = models.resnet18(weights=None)
     elif arch == "resnet34":
@@ -76,32 +99,22 @@ def build_backbone(arch: str, num_classes: int = 1000) -> nn.Module:
         model = models.wide_resnet50_2(weights=None)
     else:
         raise ValueError(f"Unknown arch: {arch}")
-    # 默认是 1000 类，不在此处改 fc；下游任务会替换
     return model
 
 
 def load_backbone_from_ckpt(arch: str, ckpt_path: str) -> nn.Module:
-    """
-    Load backbone weights from an ImageNet checkpoint produced by AT.py.
-
-    It expects either:
-      - ckpt["backbone_state"] (preferred)
-      - or ckpt["state_dict"] / ckpt["norm_model_state"] (fallback)
-    """
     ckpt = torch.load(ckpt_path, map_location="cpu")
     backbone = build_backbone(arch, num_classes=1000)
 
     if "backbone_state" in ckpt:
         state_dict = ckpt["backbone_state"]
     elif "norm_model_state" in ckpt:
-        # norm_model_state includes normalization buffers; extract .model.*
         state_dict = {
             k.replace("model.", ""): v
             for k, v in ckpt["norm_model_state"].items()
             if k.startswith("model.")
         }
     elif "state_dict" in ckpt:
-        # 直接来自训练时的模型
         state_dict = ckpt["state_dict"]
     else:
         raise KeyError("No usable backbone weights found in checkpoint.")
@@ -111,11 +124,13 @@ def load_backbone_from_ckpt(arch: str, ckpt_path: str) -> nn.Module:
         print(f"[Warning] Missing keys when loading backbone: {missing}")
     if unexpected:
         print(f"[Warning] Unexpected keys when loading backbone: {unexpected}")
-
     return backbone
 
 
-# Downstream datasets
+# ===========================
+# Transforms & datasets
+# ===========================
+
 def get_transforms():
     train_tf = transforms.Compose([
         transforms.RandomResizedCrop(224),
@@ -130,180 +145,217 @@ def get_transforms():
     return train_tf, test_tf
 
 
-def get_downstream_dataset(
+def get_downstream_dataloaders(
     name: str,
     root: str,
     train_tf,
     test_tf,
-    val_split: float = 0.1,
-) -> Tuple[DataLoader, DataLoader, int]:
+    batch_size: int,
+    num_workers: int,
+    val_split: float,
+    rank: int,
+    world_size: int,
+):
     """
-    Return train_loader, val_loader, num_classes for the given downstream dataset.
-
-    Currently implemented with torchvision for:
-      - CIFAR10
-      - CIFAR100
-      - Caltech101
-      - Caltech256
-      - DTD
-      - Flowers102
-      - Food101
-      - StanfordCars
-      - OxfordIIITPet
-      - SUN397
-
-    For other datasets (e.g. FGVC Aircraft, Birdsnap), you can arrange
-    them as ImageFolder under root/<dataset_name>/{train,val} and adapt here.
+    返回：
+      train_loader, val_loader, test_loader, num_classes, train_sampler
+    注意 sampler 在 train 时需要 set_epoch(epoch)。
     """
-    name = name.upper()
-    if name == "CIFAR10":
-        # train/val split from training set
-        ds_train = datasets.CIFAR10(root=os.path.join(root, "CIFAR10"),
-                                    train=True, download=False,
-                                    transform=train_tf)
-        ds_test = datasets.CIFAR10(root=os.path.join(root, "CIFAR10"),
-                                   train=False, download=False,
-                                   transform=test_tf)
+    name_upper = name.upper()
+
+    def _split_train(ds, val_ratio):
+        n_val = int(len(ds) * val_ratio)
+        n_train = len(ds) - n_val
+        return random_split(ds, [n_train, n_val])
+
+    if name_upper == "CIFAR10":
+        ds_train_full = datasets.CIFAR10(
+            root=osp.join(root, "CIFAR10"),
+            train=True,
+            download=False,
+            transform=train_tf,
+        )
+        ds_test = datasets.CIFAR10(
+            root=osp.join(root, "CIFAR10"),
+            train=False,
+            download=False,
+            transform=test_tf,
+        )
         num_classes = 10
+        ds_train, ds_val = _split_train(ds_train_full, val_split)
 
-        n_val = int(len(ds_train) * val_split)
-        n_train = len(ds_train) - n_val
-        ds_train, ds_val = random_split(ds_train, [n_train, n_val])
-        # val 使用 test 可能也可以，这里用训练划分出的 val
-    elif name == "CIFAR100":
-        ds_train = datasets.CIFAR100(root=os.path.join(root, "CIFAR100"),
-                                     train=True, download=False,
-                                     transform=train_tf)
-        ds_test = datasets.CIFAR100(root=os.path.join(root, "CIFAR100"),
-                                    train=False, download=False,
-                                    transform=test_tf)
+    elif name_upper == "CIFAR100":
+        ds_train_full = datasets.CIFAR100(
+            root=osp.join(root, "CIFAR100"),
+            train=True,
+            download=False,
+            transform=train_tf,
+        )
+        ds_test = datasets.CIFAR100(
+            root=osp.join(root, "CIFAR100"),
+            train=False,
+            download=False,
+            transform=test_tf,
+        )
         num_classes = 100
+        ds_train, ds_val = _split_train(ds_train_full, val_split)
 
-        n_val = int(len(ds_train) * val_split)
-        n_train = len(ds_train) - n_val
-        ds_train, ds_val = random_split(ds_train, [n_train, n_val])
+    elif name_upper == "CALTECH101":
+        ds_full = datasets.Caltech101(
+            root=osp.join(root, "Caltech101"),
+            download=False,
+            transform=train_tf,
+        )
+        num_classes = len(ds_full.categories)
+        ds_train, ds_val = _split_train(ds_full, val_split)
+        ds_test = ds_val  # 如无单独 test，可令 val=test
 
-    elif name == "CALTECH101":
-        ds = datasets.Caltech101(root=os.path.join(root, "Caltech101"),
-                                 download=False, transform=train_tf)
-        num_classes = len(ds.categories)
-        # 简单 random split：train/val
-        n_val = int(len(ds) * val_split)
-        n_train = len(ds) - n_val
-        ds_train, ds_val = random_split(ds, [n_train, n_val])
-        ds_test = ds_val  # 如无单独测试集时，可令 val=test
-
-    elif name == "CALTECH256":
-        ds = datasets.Caltech256(root=os.path.join(root, "Caltech256"),
-                                 download=False, transform=train_tf)
+    elif name_upper == "CALTECH256":
+        ds_full = datasets.Caltech256(
+            root=osp.join(root, "Caltech256"),
+            download=False,
+            transform=train_tf,
+        )
         num_classes = 257
-        n_val = int(len(ds) * val_split)
-        n_train = len(ds) - n_val
-        ds_train, ds_val = random_split(ds, [n_train, n_val])
+        ds_train, ds_val = _split_train(ds_full, val_split)
         ds_test = ds_val
 
-    elif name == "DTD":
-        ds = datasets.DTD(root=os.path.join(root, "DTD"),
-                          download=False, split="train",
-                          transform=train_tf)
+    elif name_upper == "DTD":
+        ds_full = datasets.DTD(
+            root=osp.join(root, "DTD"),
+            download=False,
+            split="train",
+            transform=train_tf,
+        )
         num_classes = 47
-        n_val = int(len(ds) * val_split)
-        n_train = len(ds) - n_val
-        ds_train, ds_val = random_split(ds, [n_train, n_val])
+        ds_train, ds_val = _split_train(ds_full, val_split)
         ds_test = ds_val
 
-    elif name == "FLOWERS102":
-        ds_train = datasets.Flowers102(root=os.path.join(root, "Flowers102"),
-                                       download=False, split="train",
-                                       transform=train_tf)
-        ds_val = datasets.Flowers102(root=os.path.join(root, "Flowers102"),
-                                     download=False, split="val",
-                                     transform=test_tf)
-        ds_test = datasets.Flowers102(root=os.path.join(root, "Flowers102"),
-                                      download=False, split="test",
-                                      transform=test_tf)
+    elif name_upper == "FLOWERS102":
+        ds_train = datasets.Flowers102(
+            root=osp.join(root, "Flowers102"),
+            download=False,
+            split="train",
+            transform=train_tf,
+        )
+        ds_val = datasets.Flowers102(
+            root=osp.join(root, "Flowers102"),
+            download=False,
+            split="val",
+            transform=test_tf,
+        )
+        ds_test = datasets.Flowers102(
+            root=osp.join(root, "Flowers102"),
+            download=False,
+            split="test",
+            transform=test_tf,
+        )
         num_classes = 102
 
-    elif name == "FOOD101":
-        ds_train = datasets.Food101(root=os.path.join(root, "Food101"),
-                                    download=False, split="train",
-                                    transform=train_tf)
-        ds_test = datasets.Food101(root=os.path.join(root, "Food101"),
-                                   download=False, split="test",
-                                   transform=test_tf)
+    elif name_upper == "FOOD101":
+        ds_train_full = datasets.Food101(
+            root=osp.join(root, "Food101"),
+            download=False,
+            split="train",
+            transform=train_tf,
+        )
+        ds_test = datasets.Food101(
+            root=osp.join(root, "Food101"),
+            download=False,
+            split="test",
+            transform=test_tf,
+        )
         num_classes = 101
+        ds_train, ds_val = _split_train(ds_train_full, val_split)
 
-        n_val = int(len(ds_train) * val_split)
-        n_train = len(ds_train) - n_val
-        ds_train, ds_val = random_split(ds_train, [n_train, n_val])
-
-    elif name == "STANFORDCARS":
-        ds_train = datasets.StanfordCars(root=os.path.join(root, "StanfordCars"),
-                                         download=False, split="train",
-                                         transform=train_tf)
-        ds_test = datasets.StanfordCars(root=os.path.join(root, "StanfordCars"),
-                                        download=False, split="test",
-                                        transform=test_tf)
+    elif name_upper in ["STANFORDCARS", "CARS"]:
+        ds_train_full = datasets.StanfordCars(
+            root=osp.join(root, "StanfordCars"),
+            download=False,
+            split="train",
+            transform=train_tf,
+        )
+        ds_test = datasets.StanfordCars(
+            root=osp.join(root, "StanfordCars"),
+            download=False,
+            split="test",
+            transform=test_tf,
+        )
         num_classes = 196
+        ds_train, ds_val = _split_train(ds_train_full, val_split)
 
-        n_val = int(len(ds_train) * val_split)
-        n_train = len(ds_train) - n_val
-        ds_train, ds_val = random_split(ds_train, [n_train, n_val])
-
-    elif name == "OXFORDIIITPETS" or name == "PETS":
-        ds_train = datasets.OxfordIIITPet(root=os.path.join(root, "OxfordIIITPet"),
-                                          download=False, split="trainval",
-                                          transform=train_tf)
-        ds_test = datasets.OxfordIIITPet(root=os.path.join(root, "OxfordIIITPet"),
-                                         download=False, split="test",
-                                         transform=test_tf)
+    elif name_upper in ["OXFORDIIITPETS", "PETS"]:
+        ds_train_full = datasets.OxfordIIITPet(
+            root=osp.join(root, "OxfordIIITPet"),
+            download=False,
+            split="trainval",
+            transform=train_tf,
+        )
+        ds_test = datasets.OxfordIIITPet(
+            root=osp.join(root, "OxfordIIITPet"),
+            download=False,
+            split="test",
+            transform=test_tf,
+        )
         num_classes = 37
+        ds_train, ds_val = _split_train(ds_train_full, val_split)
 
-        n_val = int(len(ds_train) * val_split)
-        n_train = len(ds_train) - n_val
-        ds_train, ds_val = random_split(ds_train, [n_train, n_val])
-
-    elif name == "SUN397":
-        ds_train = datasets.SUN397(root=os.path.join(root, "SUN397"),
-                                   download=False, transform=train_tf)
-        num_classes = len(ds_train.classes)
-        n_val = int(len(ds_train) * val_split)
-        n_train = len(ds_train) - n_val
-        ds_train, ds_val = random_split(ds_train, [n_train, n_val])
+    elif name_upper == "SUN397":
+        ds_full = datasets.SUN397(
+            root=osp.join(root, "SUN397"),
+            download=False,
+            transform=train_tf,
+        )
+        num_classes = len(ds_full.classes)
+        ds_train, ds_val = _split_train(ds_full, val_split)
         ds_test = ds_val
 
     else:
         raise ValueError(
             f"Dataset {name} not implemented. "
-            f"Please extend get_downstream_dataset() for your use case."
+            f"Extend get_downstream_dataloaders for your use case."
         )
 
-    # DataLoaders
-    train_loader = DataLoader(ds_train, batch_size=args.batch_size,
-                              shuffle=True, num_workers=args.num_workers,
-                              pin_memory=True)
-    val_loader = DataLoader(ds_val, batch_size=args.batch_size,
-                            shuffle=False, num_workers=args.num_workers,
-                            pin_memory=True)
-    test_loader = DataLoader(ds_test, batch_size=args.batch_size,
-                             shuffle=False, num_workers=args.num_workers,
-                             pin_memory=True)
+    train_sampler = DistributedSampler(
+        ds_train, num_replicas=world_size, rank=rank, shuffle=True
+    )
+    val_sampler = DistributedSampler(
+        ds_val, num_replicas=world_size, rank=rank, shuffle=False
+    )
+    test_sampler = DistributedSampler(
+        ds_test, num_replicas=world_size, rank=rank, shuffle=False
+    )
 
-    return train_loader, val_loader, test_loader, num_classes
+    train_loader = DataLoader(
+        ds_train,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        ds_val,
+        batch_size=batch_size,
+        sampler=val_sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        ds_test,
+        batch_size=batch_size,
+        sampler=test_sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, test_loader, num_classes, train_sampler
 
 
+# ===========================
 # Build transfer model
-def build_transfer_model(
-    backbone: nn.Module,
-    num_classes: int,
-    mode: str,
-) -> nn.Module:
-    """
-    mode:
-      - "fixed": freeze backbone, train only last linear layer
-      - "full" : fine-tune entire network
-    """
-    # 假定 backbone 是 ResNet / WideResNet，并且有 .fc 属性
+# ===========================
+
+def build_transfer_model(backbone: nn.Module, num_classes: int, mode: str) -> nn.Module:
     if not hasattr(backbone, "fc"):
         raise AttributeError("Backbone has no attribute 'fc'.")
 
@@ -315,17 +367,24 @@ def build_transfer_model(
             if not name.startswith("fc."):
                 p.requires_grad = False
     elif mode == "full":
-        # 所有参数都参与训练（默认 requires_grad=True）
         pass
     else:
-        raise ValueError(f"Unknown mode: {mode}, expected 'fixed' or 'full'.")
+        raise ValueError(f"Unknown mode: {mode}")
 
     model = NormalizedModel(backbone)
     return model
 
 
-# Metrics
-def compute_accuracy(
+# ===========================
+# Metrics (DDP aware)
+# ===========================
+
+def all_reduce_sum(t: torch.Tensor) -> torch.Tensor:
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return t
+
+
+def compute_accuracy_ddp(
     outputs: torch.Tensor,
     targets: torch.Tensor,
     num_classes: int,
@@ -333,66 +392,69 @@ def compute_accuracy(
     class_correct: torch.Tensor,
     class_total: torch.Tensor,
 ):
-    """
-    Update class_correct/class_total in-place and return batch accuracy.
+    preds = outputs.argmax(dim=1)
+    correct = preds.eq(targets)
 
-    metric:
-      - "per_sample": standard sample-wise accuracy
-      - "per_class": keep per-class counts; final accuracy = mean over classes with >0 samples
-    """
-    with torch.no_grad():
-        preds = outputs.argmax(dim=1)
-        correct = preds.eq(targets)
+    if metric == "per_sample":
+        return correct.float().sum().item(), targets.numel()
 
-        if metric == "per_sample":
-            return correct.float().mean().item()
-
-        elif metric == "per_class":
-            for c in range(num_classes):
-                mask = (targets == c)
-                if mask.sum() == 0:
-                    continue
-                class_correct[c] += correct[mask].sum().item()
-                class_total[c] += mask.sum().item()
-            # 返回 sample-wise batch accuracy 供日志参考
-            return correct.float().mean().item()
-        else:
-            raise ValueError(f"Unknown metric: {metric}")
+    elif metric == "per_class":
+        for c in range(num_classes):
+            mask = (targets == c)
+            if mask.sum() == 0:
+                continue
+            class_correct[c] += correct[mask].sum().item()
+            class_total[c] += mask.sum().item()
+        return correct.float().sum().item(), targets.numel()
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
 
 
-def finalize_accuracy(num_classes: int, metric: str,
-                      correct_total: float, count_total: int,
-                      class_correct: torch.Tensor,
-                      class_total: torch.Tensor) -> float:
+def finalize_accuracy_ddp(
+    num_classes: int,
+    metric: str,
+    correct_total: float,
+    count_total: float,
+    class_correct: torch.Tensor,
+    class_total: torch.Tensor,
+) -> float:
     if metric == "per_sample":
         return correct_total / count_total * 100.0
     else:
-        # per_class
         mask = class_total > 0
         per_cls_acc = class_correct[mask] / class_total[mask]
         return per_cls_acc.mean().item() * 100.0
 
 
-# Training & evaluation
-def train_one_epoch(
-    model: nn.Module,
+# ===========================
+# Train & eval (DDP)
+# ===========================
+
+def train_one_epoch_ddp(
+    model_ddp: DDP,
     loader: DataLoader,
+    train_sampler: DistributedSampler,
     optimizer: torch.optim.Optimizer,
     num_classes: int,
     metric: str,
-) -> float:
-    model.train()
-    total_loss = 0.0
-    total_correct = 0.0
-    total_count = 0
+    device: torch.device,
+    epoch: int,
+    rank: int,
+):
+    model_ddp.train()
+    train_sampler.set_epoch(epoch)
 
-    class_correct = torch.zeros(num_classes, device=DEVICE)
-    class_total = torch.zeros(num_classes, device=DEVICE)
+    total_loss_local = 0.0
+    total_correct_local = 0.0
+    total_count_local = 0.0
+
+    class_correct = torch.zeros(num_classes, device=device)
+    class_total = torch.zeros(num_classes, device=device)
 
     for x, y in loader:
-        x, y = x.to(DEVICE), y.to(DEVICE)
+        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
-        logits = model(x)
+        logits = model_ddp(x)
         loss = F.cross_entropy(logits, y)
 
         optimizer.zero_grad()
@@ -400,79 +462,114 @@ def train_one_epoch(
         optimizer.step()
 
         with torch.no_grad():
-            batch_acc = compute_accuracy(
+            correct_sum, count = compute_accuracy_ddp(
                 logits, y, num_classes, metric, class_correct, class_total
             )
-            total_loss += loss.item() * x.size(0)
-            total_correct += (logits.argmax(1) == y).sum().item()
-            total_count += x.size(0)
+            total_loss_local += loss.item() * x.size(0)
+            total_correct_local += correct_sum
+            total_count_local += count
 
-    avg_loss = total_loss / total_count
-    sample_acc = total_correct / total_count * 100.0
-    metric_acc = finalize_accuracy(
-        num_classes, metric, total_correct, total_count,
-        class_correct, class_total
+    # all-reduce scalar统计
+    total_loss = torch.tensor(total_loss_local, device=device)
+    total_correct = torch.tensor(total_correct_local, device=device)
+    total_count = torch.tensor(total_count_local, device=device)
+    all_reduce_sum(total_loss)
+    all_reduce_sum(total_correct)
+    all_reduce_sum(total_count)
+
+    # per-class统计也 all-reduce
+    all_reduce_sum(class_correct)
+    all_reduce_sum(class_total)
+
+    avg_loss = (total_loss / total_count).item()
+    sample_acc = (total_correct / total_count).item() * 100.0
+    metric_acc = finalize_accuracy_ddp(
+        num_classes, metric,
+        total_correct.item(), total_count.item(),
+        class_correct, class_total,
     )
+    if is_main_process(rank):
+        print(
+            f"[Train] Epoch {epoch:03d} | "
+            f"loss={avg_loss:.4f}, sample_acc={sample_acc:.2f}%, metric_acc={metric_acc:.2f}%"
+        )
     return avg_loss, sample_acc, metric_acc
 
 
 @torch.no_grad()
-def evaluate_epoch(
-    model: nn.Module,
+def evaluate_ddp(
+    model_ddp: DDP,
     loader: DataLoader,
     num_classes: int,
     metric: str,
-) -> Tuple[float, float]:
-    model.eval()
-    total_correct = 0.0
-    total_count = 0
+    device: torch.device,
+    tag: str,
+    rank: int,
+):
+    model_ddp.eval()
 
-    class_correct = torch.zeros(num_classes, device=DEVICE)
-    class_total = torch.zeros(num_classes, device=DEVICE)
+    total_correct_local = 0.0
+    total_count_local = 0.0
+    class_correct = torch.zeros(num_classes, device=device)
+    class_total = torch.zeros(num_classes, device=device)
 
     for x, y in loader:
-        x, y = x.to(DEVICE), y.to(DEVICE)
+        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+        logits = model_ddp(x)
 
-        logits = model(x)
-        batch_acc = compute_accuracy(
+        correct_sum, count = compute_accuracy_ddp(
             logits, y, num_classes, metric, class_correct, class_total
         )
-        total_correct += (logits.argmax(1) == y).sum().item()
-        total_count += x.size(0)
+        total_correct_local += correct_sum
+        total_count_local += count
 
-    sample_acc = total_correct / total_count * 100.0
-    metric_acc = finalize_accuracy(
-        num_classes, metric, total_correct, total_count,
-        class_correct, class_total
+    total_correct = torch.tensor(total_correct_local, device=device)
+    total_count = torch.tensor(total_count_local, device=device)
+    all_reduce_sum(total_correct)
+    all_reduce_sum(total_count)
+    all_reduce_sum(class_correct)
+    all_reduce_sum(class_total)
+
+    sample_acc = (total_correct / total_count).item() * 100.0
+    metric_acc = finalize_accuracy_ddp(
+        num_classes, metric,
+        total_correct.item(), total_count.item(),
+        class_correct, class_total,
     )
+
+    if is_main_process(rank):
+        print(
+            f"[{tag}] sample_acc={sample_acc:.2f}%, metric_acc={metric_acc:.2f}%"
+        )
     return sample_acc, metric_acc
 
 
-def train_with_lr_search(
+def train_with_lr_search_ddp(
     base_model: nn.Module,
     train_loader: DataLoader,
     val_loader: DataLoader,
     test_loader: DataLoader,
+    train_sampler: DistributedSampler,
     num_classes: int,
     metric: str,
     lrs: List[float],
-    epochs: int = 150,
+    epochs: int,
+    device: torch.device,
+    rank: int,
 ):
-    """
-    Train the downstream model with multiple learning rates,
-    choose the best by validation metric.
-
-    Returns:
-      best_lr, best_val_acc, best_test_acc
-    """
     best_val_acc = -1.0
     best_test_acc = -1.0
     best_lr = None
 
     for lr in lrs:
-        print(f"\n=== Training with lr={lr} ===")
-        model = copy.deepcopy(base_model).to(DEVICE)
-        params = [p for p in model.parameters() if p.requires_grad]
+        if is_main_process(rank):
+            print(f"\n=== LR {lr} ===")
+
+        # 每个 lr 从同一 base_model 权重开始
+        model = copy.deepcopy(base_model).to(device)
+        ddp_model = DDP(model, device_ids=[device.index], output_device=device.index)
+
+        params = [p for p in ddp_model.parameters() if p.requires_grad]
         optimizer = torch.optim.SGD(
             params, lr=lr, momentum=0.9, weight_decay=5e-4
         )
@@ -484,49 +581,53 @@ def train_with_lr_search(
         best_test_this_lr = -1.0
 
         for epoch in range(1, epochs + 1):
-            train_loss, train_sample_acc, train_metric_acc = train_one_epoch(
-                model, train_loader, optimizer, num_classes, metric
+            train_one_epoch_ddp(
+                ddp_model, train_loader, train_sampler,
+                optimizer, num_classes, metric,
+                device, epoch, rank,
             )
             scheduler.step()
 
-            val_sample_acc, val_metric_acc = evaluate_epoch(
-                model, val_loader, num_classes, metric
-            )
-            print(
-                f"[lr={lr}] Epoch {epoch:03d} | "
-                f"Train loss={train_loss:.4f}, sample_acc={train_sample_acc:.2f}%, metric_acc={train_metric_acc:.2f}% | "
-                f"Val sample_acc={val_sample_acc:.2f}%, metric_acc={val_metric_acc:.2f}%"
+            val_sample_acc, val_metric_acc = evaluate_ddp(
+                ddp_model, val_loader, num_classes, metric, device, "Val", rank
             )
 
-            # 以 metric_acc（sample 或 per-class）作为选择依据
             if val_metric_acc > best_val_this_lr:
                 best_val_this_lr = val_metric_acc
-                test_sample_acc, test_metric_acc = evaluate_epoch(
-                    model, test_loader, num_classes, metric
+                test_sample_acc, test_metric_acc = evaluate_ddp(
+                    ddp_model, test_loader, num_classes, metric, device, "Test", rank
                 )
                 best_test_this_lr = test_metric_acc
 
-        print(
-            f"[lr={lr}] Done. Best val metric_acc={best_val_this_lr:.2f}%, "
-            f"corresponding test metric_acc={best_test_this_lr:.2f}%"
-        )
+        if is_main_process(rank):
+            print(
+                f"[LR={lr}] best_val_metric={best_val_this_lr:.2f}%, "
+                f"corresponding_test_metric={best_test_this_lr:.2f}%"
+            )
 
         if best_val_this_lr > best_val_acc:
             best_val_acc = best_val_this_lr
             best_test_acc = best_test_this_lr
             best_lr = lr
 
-    print(
-        f"\n=== LR search finished. Best lr={best_lr}, "
-        f"val metric_acc={best_val_acc:.2f}%, "
-        f"test metric_acc={best_test_acc:.2f}% ==="
-    )
+        barrier()
+
+    if is_main_process(rank):
+        print(
+            f"\n=== LR search done. best_lr={best_lr}, "
+            f"best_val_metric={best_val_acc:.2f}%, "
+            f"best_test_metric={best_test_acc:.2f}% ==="
+        )
     return best_lr, best_val_acc, best_test_acc
 
 
+# ===========================
+# Args & main
+# ===========================
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Downstream transfer evaluation (fixed-feature / full-network)"
+        description="Downstream transfer evaluation (DDP, fixed-feature / full-network)"
     )
     parser.add_argument("--data-root", type=str, required=True,
                         help="Root where downstream datasets are stored")
@@ -541,63 +642,78 @@ def parse_args():
                         choices=["fixed", "full"],
                         help="Transfer mode: fixed (linear) or full (fine-tune)")
     parser.add_argument("--batch-size", type=int, default=64,
-                        help="Batch size for downstream training")
+                        help="Per-GPU batch size")
     parser.add_argument("--num-workers", type=int, default=4,
                         help="DataLoader num_workers")
     parser.add_argument("--epochs", type=int, default=150,
-                        help="Number of downstream training epochs")
+                        help="Downstream training epochs")
     parser.add_argument("--metric", type=str, default="per_sample",
                         choices=["per_sample", "per_class"],
-                        help="Evaluation metric: sample-wise or per-class mean")
+                        help="Evaluation metric")
     parser.add_argument("--lrs", type=float, nargs="+",
                         default=[0.01, 0.001],
-                        help="Learning rate candidates for grid search")
+                        help="Learning rate candidates")
     parser.add_argument("--val-split", type=float, default=0.1,
-                        help="Val split ratio if dataset has no official val set")
-    args = parser.parse_args()
-    return args
+                        help="Val split ratio if no official val set")
+    return parser.parse_args()
 
 
 def main():
-    global args
     args = parse_args()
-    print("===== Transfer evaluation config =====")
-    for k, v in vars(args).items():
-        print(f"{k}: {v}")
-    print("======================================")
+    device, rank, world_size, local_rank = init_distributed()
+
+    if is_main_process(rank):
+        print("===== Transfer evaluation (DDP) config =====")
+        for k, v in vars(args).items():
+            print(f"{k}: {v}")
+        print("============================================")
 
     train_tf, test_tf = get_transforms()
 
-    train_loader, val_loader, test_loader, num_classes = get_downstream_dataset(
-        args.dataset, args.data_root, train_tf, test_tf, val_split=args.val_split
-    )
+    train_loader, val_loader, test_loader, num_classes, train_sampler = \
+        get_downstream_dataloaders(
+            args.dataset,
+            args.data_root,
+            train_tf,
+            test_tf,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            val_split=args.val_split,
+            rank=rank,
+            world_size=world_size,
+        )
 
     backbone = load_backbone_from_ckpt(args.arch, args.ckpt)
     transfer_model_base = build_transfer_model(
         backbone, num_classes=num_classes, mode=args.mode
-    )
+    ).to(device)
 
-    transfer_model_base = transfer_model_base.to(DEVICE)
-
-    best_lr, best_val_acc, best_test_acc = train_with_lr_search(
+    best_lr, best_val_acc, best_test_acc = train_with_lr_search_ddp(
         transfer_model_base,
         train_loader,
         val_loader,
         test_loader,
+        train_sampler,
         num_classes=num_classes,
         metric=args.metric,
         lrs=args.lrs,
         epochs=args.epochs,
+        device=device,
+        rank=rank,
     )
 
-    print("\n========== Final Result ==========")
-    print(f"Dataset       : {args.dataset}")
-    print(f"Backbone      : {args.arch}")
-    print(f"Mode          : {args.mode}")
-    print(f"Best LR       : {best_lr}")
-    print(f"Best Val Acc  : {best_val_acc:.2f}% ({args.metric})")
-    print(f"Best Test Acc : {best_test_acc:.2f}% ({args.metric})")
-    print("===================================")
+    if is_main_process(rank):
+        print("\n========== Final Result ==========")
+        print(f"Dataset       : {args.dataset}")
+        print(f"Backbone      : {args.arch}")
+        print(f"Mode          : {args.mode}")
+        print(f"Best LR       : {best_lr}")
+        print(f"Best Val Acc  : {best_val_acc:.2f}% ({args.metric})")
+        print(f"Best Test Acc : {best_test_acc:.2f}% ({args.metric})")
+        print("===================================")
+
+    barrier()
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
