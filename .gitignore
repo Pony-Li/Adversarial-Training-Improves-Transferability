@@ -1,1 +1,32 @@
+# Ignore model checkpoints
 *.pth
+*.pt
+ckpts/
+checkpoints/
+outputs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+wandb/
+tensorboard/
+
+# Environments
+.env
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/
+datasets/
+*.zip
+*.tar
+*.tar.gz
+
+# VSCode settings
+.vscode/
