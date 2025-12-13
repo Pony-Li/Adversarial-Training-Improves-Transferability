@@ -91,12 +91,12 @@ def get_loaders(data_root: str,
                               batch_size=batch_size,
                               sampler=train_sampler,
                               num_workers=num_workers,
-                              pin_memory=True)
+                              pin_memory=False)
     val_loader = DataLoader(val_set,
                             batch_size=batch_size,
                             sampler=val_sampler,
                             num_workers=num_workers,
-                            pin_memory=True)
+                            pin_memory=False)
     return train_loader, val_loader, train_sampler, val_sampler
 
 
