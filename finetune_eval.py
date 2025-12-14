@@ -38,10 +38,7 @@ LR_MILESTONES = [50, 100]        # 每 50 epoch ×0.1
 VAL_SPLIT = 0.1                  # 无官方 val 集时，从 train 随机划出 10% 做 val
 
 
-# ===========================
 # DDP utils
-# ===========================
-
 def init_distributed():
     if not dist.is_available():
         raise RuntimeError("torch.distributed is not available.")
@@ -66,10 +63,7 @@ def barrier():
         dist.barrier()
 
 
-# ===========================
 # Normalization wrapper
-# ===========================
-
 class NormalizedModel(nn.Module):
     """
     输入假定在 [0,1]，在内部做 ImageNet mean/std 归一化再送入 backbone。
@@ -88,10 +82,7 @@ class NormalizedModel(nn.Module):
         return self.model(x)
 
 
-# ===========================
 # Backbone construction & loading
-# ===========================
-
 def build_backbone(arch: str, num_classes: int = 1000) -> nn.Module:
     if arch == "resnet18":
         model = models.resnet18(weights=None)
@@ -131,10 +122,7 @@ def load_backbone_from_ckpt(arch: str, ckpt_path: str) -> nn.Module:
     return backbone
 
 
-# ===========================
 # Transforms & datasets
-# ===========================
-
 def get_transforms():
     train_tf = transforms.Compose([
         transforms.RandomResizedCrop(224),
@@ -351,10 +339,7 @@ def get_downstream_dataloaders(
     return train_loader, val_loader, test_loader, num_classes, train_sampler
 
 
-# ===========================
 # Build transfer model
-# ===========================
-
 def build_transfer_model(backbone: nn.Module, num_classes: int, mode: str) -> nn.Module:
     if not hasattr(backbone, "fc"):
         raise AttributeError("Backbone has no attribute 'fc'.")
@@ -377,10 +362,7 @@ def build_transfer_model(backbone: nn.Module, num_classes: int, mode: str) -> nn
     return model
 
 
-# ===========================
 # Metrics (DDP aware)
-# ===========================
-
 def all_reduce_sum(t: torch.Tensor) -> torch.Tensor:
     dist.all_reduce(t, op=dist.ReduceOp.SUM)
     return t
@@ -428,10 +410,7 @@ def finalize_accuracy(
         return per_cls_acc.mean().item() * 100.0
 
 
-# ===========================
 # Train & eval
-# ===========================
-
 def train_one_epoch(
     model: DDP,
     loader: DataLoader,
@@ -677,10 +656,7 @@ def run_transfer(
     return best_lr, best_val_acc, best_test_acc
 
 
-# ===========================
 # Args & main
-# ===========================
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Downstream transfer evaluation (fixed-feature / full-network, paper setting)"
