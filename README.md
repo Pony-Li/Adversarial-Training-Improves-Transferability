@@ -1,45 +1,56 @@
-# AT-Transfer-ImageNet
+# Adversarial Training Improves Transferability
 
-Reproduction project for the ImageNet adversarial training part of  
-**“Do Adversarially Robust ImageNet Models Transfer Better?”**
+## Project Overview
 
-This repo focuses on training **standard** and **adversarially robust** ImageNet models (L2 / L∞ PGD) with **DDP**, and preparing checkpoints for later transfer-learning experiments.
+This project aims to reproduce the core experiments from the NIPS paper "Do Adversarially Robust ImageNet Models Transfer Better?", exploring the impact of Adversarial Training on model transferability. By performing adversarial training on the ImageNet dataset and evaluating the trained models' transfer performance on downstream tasks (such as classification), it verifies whether adversarial training can enhance model generalization and robustness.
 
----
+The project consists of two main components:
+- **Adversarial Training Module**: Performs distributed adversarial training on ImageNet using PGD attacks to generate robust pre-trained models.
+- **Transfer Evaluation Module**: Transfers pre-trained models to downstream datasets (e.g., CIFAR-10, CIFAR-100), evaluating performance in fixed-feature and full-network fine-tuning modes.
 
-## 1. Features
+The experimental results will help understand how adversarial training affects model transfer learning capabilities, particularly whether it leads to better performance on downstream tasks.
 
-- ImageNet training with:
-  - Standard ERM (no adversarial perturbation)
-  - L2-PGD adversarial training
-  - L∞-PGD adversarial training
-- Distributed training with **torchrun + DDP**
-- Backbones (easily extensible):
-  - `resnet18`
-  - `resnet34`
-  - `resnet50`
-  - `wide_resnet50_2`
-- Adversarial example generation via **[torchattacks](https://github.com/Harry24k/adversarial-attacks-pytorch)**:
-  - `PGDL2` for L2 norm
-  - `PGD` for L∞ norm
-- ImageNet-standard preprocessing (224×224, mean/std normalization)
-- Automatic checkpoint management:
-  - Save a snapshot once every **10 epochs**
+## Main Experiments
 
----
+- **ImageNet Adversarial Training**: Trains ResNet series models on ImageNet using Distributed Data Parallel (DDP), employing PGD or L2 norm adversarial sample generation.
+- **Downstream Transfer Evaluation**: Tests the transfer performance of pre-trained models on multiple downstream datasets, supporting linear classification and full-network fine-tuning modes, recording accuracy metrics.
 
-## 2. Environment
+## Dependencies
 
-Recommended environment (adjustable according to actual situation):
+- Python 3.8+
+- PyTorch 1.10+
+- TorchVision
+- TorchAttacks
+- Other standard libraries (e.g., NumPy, PIL)
 
-- Python ≥ 3.8
-- PyTorch ≥ 1.12
-- torchvision ≥ 0.13
-- CUDA 11.x / 12.x
-- torchattacks ≥ 3.4
+## Installation and Usage
 
-Install dependencies:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/Pony-Li/Adversarial-Training-Improves-Transferability.git
+   cd Adversarial-Training-Improves-Transferability
+   ```
 
-```bash
-pip install torch torchvision
-pip install torchattacks
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Prepare data: Download ImageNet and downstream datasets, and set the corresponding paths.
+
+4. Run experiments: Configure parameters as needed to start adversarial training or transfer evaluation (specific commands will be updated after code refactoring).
+
+## Citation
+
+If you use this project in your research, please cite the original paper:
+
+```
+@article{salman2020adversarially,
+  title={Do adversarially robust imagenet models transfer better?},
+  author={Salman, Hadi and Ilyas, Andrew and Engstrom, Logan and Kapoor, Ashish and Madry, Aleksander},
+  journal={Advances in Neural Information Processing Systems},
+  volume={33},
+  pages={3533--3545},
+  year={2020}
+}
+```
