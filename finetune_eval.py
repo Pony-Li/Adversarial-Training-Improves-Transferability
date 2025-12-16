@@ -7,12 +7,12 @@ Downstream transfer evaluation (fixed-feature / full-network) with DDP,
 - 训练 150 epochs
 - SGD, momentum=0.9, weight_decay=5e-4
 - 初始 lr ∈ {0.01, 0.001}
-- 每 50 epoch 学习率 ×0.1
-- 训练增强：RandomResizedCrop(224) + RandomHorizontalFlip
-- 测试增强：Resize(256) + CenterCrop(224)
+- 每 50 epoch 学习率 * 0.1
+- 训练增强: RandomResizedCrop(224) + RandomHorizontalFlip
+- 测试增强: Resize(256) + CenterCrop(224)
 - fixed 模式：只训练最后一层
 - full 模式：全网络 finetune
-- DDP 多卡训练，checkpoint 每 10 个 epoch 保存一次
+- DDP 多卡训练, checkpoint 每 10 个 epoch 保存一次
 - 结果写入 summary_*.json
 """
 
