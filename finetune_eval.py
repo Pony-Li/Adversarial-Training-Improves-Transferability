@@ -194,7 +194,7 @@ def get_downstream_dataloaders(
     elif name_upper == "CALTECH101":
         ds_full = datasets.Caltech101(
             root=osp.join(root, "Caltech101"),
-            download=False,
+            download=True,
             transform=train_tf,
         )
         num_classes = len(ds_full.categories)
@@ -204,7 +204,7 @@ def get_downstream_dataloaders(
     elif name_upper == "CALTECH256":
         ds_full = datasets.Caltech256(
             root=osp.join(root, "Caltech256"),
-            download=False,
+            download=True,
             transform=train_tf,
         )
         num_classes = 257
@@ -214,7 +214,7 @@ def get_downstream_dataloaders(
     elif name_upper == "DTD":
         ds_full = datasets.DTD(
             root=osp.join(root, "DTD"),
-            download=False,
+            download=True,
             split="train",
             transform=train_tf,
         )
@@ -225,19 +225,19 @@ def get_downstream_dataloaders(
     elif name_upper == "FLOWERS102":
         ds_train = datasets.Flowers102(
             root=osp.join(root, "Flowers102"),
-            download=False,
+            download=True,
             split="train",
             transform=train_tf,
         )
         ds_val = datasets.Flowers102(
             root=osp.join(root, "Flowers102"),
-            download=False,
+            download=True,
             split="val",
             transform=test_tf,
         )
         ds_test = datasets.Flowers102(
             root=osp.join(root, "Flowers102"),
-            download=False,
+            download=True,
             split="test",
             transform=test_tf,
         )
@@ -246,13 +246,13 @@ def get_downstream_dataloaders(
     elif name_upper == "FOOD101":
         ds_train_full = datasets.Food101(
             root=osp.join(root, "Food101"),
-            download=False,
+            download=True,
             split="train",
             transform=train_tf,
         )
         ds_test = datasets.Food101(
             root=osp.join(root, "Food101"),
-            download=False,
+            download=True,
             split="test",
             transform=test_tf,
         )
@@ -262,13 +262,13 @@ def get_downstream_dataloaders(
     elif name_upper in ["STANFORDCARS", "CARS"]:
         ds_train_full = datasets.StanfordCars(
             root=osp.join(root, "StanfordCars"),
-            download=False,
+            download=True,
             split="train",
             transform=train_tf,
         )
         ds_test = datasets.StanfordCars(
             root=osp.join(root, "StanfordCars"),
-            download=False,
+            download=True,
             split="test",
             transform=test_tf,
         )
@@ -278,13 +278,13 @@ def get_downstream_dataloaders(
     elif name_upper in ["OXFORDIIITPETS", "PETS"]:
         ds_train_full = datasets.OxfordIIITPet(
             root=osp.join(root, "OxfordIIITPet"),
-            download=False,
+            download=True,
             split="trainval",
             transform=train_tf,
         )
         ds_test = datasets.OxfordIIITPet(
             root=osp.join(root, "OxfordIIITPet"),
-            download=False,
+            download=True,
             split="test",
             transform=test_tf,
         )
@@ -294,7 +294,7 @@ def get_downstream_dataloaders(
     elif name_upper == "SUN397":
         ds_full = datasets.SUN397(
             root=osp.join(root, "SUN397"),
-            download=False,
+            download=True,
             transform=train_tf,
         )
         num_classes = len(ds_full.classes)
