@@ -2,7 +2,7 @@
 # finetune_eval.py
 """
 Downstream transfer evaluation (fixed-feature / full-network) with DDP,
-按《Do Adversarially Robust ImageNet Models Transfer Better?》附录 A.2.2 / A.2.3 设定：
+按《Do Adversarially Robust ImageNet Models Transfer Better?》附录 A.2.2 / A.2.3 设定:
 
 - 训练 150 epochs
 - SGD, momentum=0.9, weight_decay=5e-4
@@ -10,8 +10,8 @@ Downstream transfer evaluation (fixed-feature / full-network) with DDP,
 - 每 50 epoch 学习率 * 0.1
 - 训练增强: RandomResizedCrop(224) + RandomHorizontalFlip
 - 测试增强: Resize(256) + CenterCrop(224)
-- fixed 模式：只训练最后一层
-- full 模式：全网络 finetune
+- fixed 模式: 只训练最后一层
+- full 模式: 全网络 finetune
 - DDP 多卡训练, checkpoint 每 10 个 epoch 保存一次
 - 结果写入 summary_*.json
 """
@@ -31,11 +31,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split, DistributedSampler
 from torchvision import datasets, transforms, models
 
-# ===== 固定的论文设定 =====
+# 固定的论文设定
 FIXED_LRS = [0.01, 0.001]        # 初始学习率候选
 FIXED_EPOCHS = 150               # 总 epoch 数
 LR_MILESTONES = [50, 100]        # 每 50 epoch ×0.1
-VAL_SPLIT = 0.1                  # 无官方 val 集时，从 train 随机划出 10% 做 val
+VAL_SPLIT = 0.1                  # 无官方 val 集时, 从 train 随机划出 10% 做 val
 
 
 # DDP utils
@@ -148,8 +148,7 @@ def get_downstream_dataloaders(
     world_size: int,
 ):
     """
-    返回：
-      train_loader, val_loader, test_loader, num_classes, train_sampler
+    返回: train_loader, val_loader, test_loader, num_classes, train_sampler
     """
 
     name_upper = name.upper()
