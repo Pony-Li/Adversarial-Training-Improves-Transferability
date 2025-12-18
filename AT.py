@@ -8,6 +8,8 @@ torchrun --nproc_per_node=8 AT.py \
     --arch resnet50 \
     --norm l2 \
     --epsilon 0.5 \
+    --batch-size 256 \
+    --num-workers 8 \
     --save-dir ./ckpts_resnet50_l2_eps0_5
 """
 
@@ -81,8 +83,8 @@ def get_loaders(data_root: str,
     train_sampler = distributed.DistributedSampler(
         train_set, num_replicas=world_size, rank=rank, shuffle=True, drop_last=False
     )
-    # 验证集可以用 DistributedSampler 也可以只在 rank0 上 eval；
-    # 这里用 DistributedSampler, 所有 rank 共同算, 然后聚合。
+    # 验证集可以用 DistributedSampler 也可以只在 rank0 上 eval;
+    # 这里用 DistributedSampler, 所有 rank 共同算, 然后聚合
     val_sampler = distributed.DistributedSampler(
         val_set, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False
     )
@@ -261,7 +263,7 @@ def main():
         if rank == 0:
             print(f"Resumed from {args.resume}, epoch {ckpt['epoch']}, best_acc={best_acc:.2f}")
 
-    # 固定 PGD 参数：steps=3, alpha=2*eps/3
+    # 固定 PGD 参数: steps=3, alpha=2*eps/3
     alpha = 2.0 * args.epsilon / PGD_STEPS
     if args.epsilon > 0.0:
         if args.norm == "linf":
