@@ -263,7 +263,7 @@ def main():
         if rank == 0:
             print(f"Resumed from {args.resume}, epoch {ckpt['epoch']}, best_acc={best_acc:.2f}")
 
-    # 固定 PGD 参数: steps=3, alpha=2*eps/3
+    # 固定 PGD 参数: steps=3, alpha=2*eps/3 (论文设定)
     alpha = 2.0 * args.epsilon / PGD_STEPS
     if args.epsilon > 0.0:
         if args.norm == "linf":
