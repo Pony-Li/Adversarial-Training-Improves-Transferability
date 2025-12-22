@@ -15,6 +15,23 @@ The experimental results will help understand how adversarial training affects m
 - **ImageNet Adversarial Training**: Trains ResNet series models on ImageNet using Distributed Data Parallel (DDP), employing PGD or L2 norm adversarial sample generation.
 - **Downstream Transfer Evaluation**: Tests the transfer performance of pre-trained models on multiple downstream datasets, supporting linear classification and full-network fine-tuning modes, recording accuracy metrics.
 
+## Experimental Details
+
+### ImageNet Pre-training
+- **Models**: ResNet-18, ResNet-34, ResNet-50, Wide ResNet-50-2
+- **Training Setup**: 90 epochs, SGD optimizer with initial learning rate 0.1, momentum 0.9, weight decay 1e-4, learning rate decay at epochs 30 and 60 with gamma 0.1
+- **Adversarial Training**: PGD attacks with 3 steps, alpha = 2 * epsilon / 3, epsilon in {0.0 (ERM), 0.5 (L2), 4/255 (L∞)}
+- **Data Augmentation**: Random resized crop (224x224), random horizontal flip, ImageNet normalization
+- **Distributed Training**: Multi-GPU with torchrun and DDP
+
+### Downstream Transfer Evaluation
+- **Datasets**: CIFAR-10, CIFAR-100, Caltech-101, Caltech-256, DTD, Flowers-102, Food-101, Stanford Cars, Oxford-IIIT Pets, SUN-397
+- **Training Setup**: 150 epochs, SGD optimizer with learning rates [0.01, 0.001], momentum 0.9, weight decay 5e-4, learning rate decay at epochs 50 and 100 with gamma 0.1
+- **Modes**: Fixed-feature (linear classifier on frozen backbone) and full-network fine-tuning
+- **Metrics**: Per-sample and per-class accuracy
+- **Data Augmentation**: Random resized crop (224x224), random horizontal flip for training; resize (256x256) + center crop (224x224) for testing
+- **Validation**: 10% split from training set for hyperparameter tuning
+
 ## Dependencies
 
 - Python 3.8+
