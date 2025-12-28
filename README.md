@@ -32,6 +32,40 @@ The experimental results will help understand how adversarial training affects m
 - **Data Augmentation**: Random resized crop (224x224), random horizontal flip for training; resize (256x256) + center crop (224x224) for testing
 - **Validation**: 10% split from training set for hyperparameter tuning
 
+## Results — Transfer Accuracy (tables)
+
+Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for different robustness parameters (\varepsilon). Values are percentages; bolded entries indicate the best value in the row.
+
+#### Transfer accuracy vs. small perturbation magnitudes (scaled to 1/255)
+
+| Dataset | Transfer Type | Model | 0.0 | 0.5/255 | 1.0/255 | 2.0/255 | 4.0/255 | 8.0/255 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| CIFAR-10 | Full-network | ResNet-18 | 95.81 | 96.35 | 96.68 | 96.73 | **96.84** | 96.47 |
+| CIFAR-10 | Full-network | ResNet-50 | 96.98 | 97.54 | 97.76 | 97.61 | **97.76** | 97.59 |
+| CIFAR-10 | Fixed-feature | ResNet-18 | 73.72 | 85.98 | 88.42 | 89.36 | **89.42** | 88.43 |
+| CIFAR-10 | Fixed-feature | ResNet-50 | 76.51 | 88.22 | 90.38 | 91.73 | **92.55** | 91.93 |
+| CIFAR-100 | Full-network | ResNet-18 | 80.48 | 82.32 | 83.06 | **83.35** | 82.59 | 81.45 |
+| CIFAR-100 | Full-network | ResNet-50 | 83.95 | 85.09 | 85.25 | 85.69 | **85.74** | 84.96 |
+| CIFAR-100 | Fixed-feature | ResNet-18 | 51.52 | 65.67 | 68.24 | **70.23** | 69.60 | 67.78 |
+| CIFAR-100 | Fixed-feature | ResNet-50 | 54.22 | 68.76 | 72.97 | 73.97 | **74.62** | 72.94 |
+
+#### Transfer accuracy vs. a wider range of robustness parameters
+
+| Dataset | Transfer Type | Model | 0 | 0.01 | 0.03 | 0.05 | 0.1 | 0.25 | 0.5 | 1.0 | 3.0 | 5.0 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| CIFAR-10 | Full-network | ResNet-18 | 95.81 | 95.71 | 96.14 | 96.17 | 96.24 | 96.52 | 96.41 | 96.68 | **96.77** | 96.41 |
+| CIFAR-10 | Full-network | ResNet-50 | 96.98 | 97.18 | 97.23 | 96.90 | 97.48 | 97.62 | 97.72 | **97.78** | 97.76 | 97.64 |
+| CIFAR-10 | Fixed-feature | ResNet-18 | 73.72 | 76.12 | 76.84 | 79.17 | 81.63 | 84.66 | 86.37 | 89.36 | **90.97** | 89.83 |
+| CIFAR-10 | Fixed-feature | ResNet-50 | 76.51 | 78.48 | 82.05 | 82.02 | 86.13 | 87.97 | 89.68 | 91.36 | **93.52** | 93.50 |
+| CIFAR-100 | Full-network | ResNet-18 | 80.48 | 81.09 | 81.23 | 81.28 | 81.39 | 82.63 | 82.71 | 82.86 | **82.93** | 81.68 |
+| CIFAR-100 | Full-network | ResNet-50 | 83.95 | 83.90 | 84.41 | 84.01 | 84.61 | 85.29 | 85.51 | 85.54 | **85.79** | 85.60 |
+| CIFAR-100 | Fixed-feature | ResNet-18 | 51.52 | 54.38 | 54.83 | 57.79 | 60.62 | 64.61 | 67.48 | 70.91 | **71.61** | 69.70 |
+| CIFAR-100 | Fixed-feature | ResNet-50 | 54.22 | 55.49 | 60.52 | 59.84 | 64.22 | 69.33 | 71.54 | 74.32 | **77.16** | 75.62 |
+
+Notes:
+- Results are reported as top-1 transfer accuracy (%) on each downstream dataset and transfer mode.
+- The first table shows perturbation magnitudes scaled to the image range (1/255). The second table reports a broader set of robustness parameters used in supplementary experiments.
+
 ## Dependencies
 
 - Python 3.8+
