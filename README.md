@@ -36,7 +36,7 @@ The experimental results will help understand how adversarial training affects m
 
 Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for different robustness parameters ($\epsilon$). Values are percentages; bolded entries indicate the best value in the row.
 
-#### Transfer accuracy for L∞ adversarial training (small perturbation magnitudes, scaled to 1/255)
+#### Transfer accuracy for L∞ adversarial training:
 
 | Dataset | Transfer Type | Model | 0.0 | 0.5/255 | 1.0/255 | 2.0/255 | 4.0/255 | 8.0/255 |
 |---|---|---|---:|---:|---:|---:|---:|---:|
@@ -49,7 +49,7 @@ Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for dif
 | CIFAR-100 | Fixed-feature | ResNet-18 | 51.52 | 65.67 | 68.24 | **70.23** | 69.60 | 67.78 |
 | CIFAR-100 | Fixed-feature | ResNet-50 | 54.22 | 68.76 | 72.97 | 73.97 | **74.62** | 72.94 |
 
-#### Transfer accuracy for L2 adversarial training (wider range of robustness parameters)
+#### Transfer accuracy for L2 adversarial training:
 
 | Dataset | Transfer Type | Model | 0 | 0.01 | 0.03 | 0.05 | 0.1 | 0.25 | 0.5 | 1.0 | 3.0 | 5.0 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
