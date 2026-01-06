@@ -22,7 +22,7 @@ The experimental results will help understand how adversarial training affects m
 - **Training Setup**: 90 epochs, SGD optimizer with initial learning rate 0.1, momentum 0.9, weight decay 1e-4, learning rate decay at epochs 30 and 60 with gamma 0.1
 - **Adversarial Training**: PGD attacks with 3 steps, alpha = 2 * $\epsilon$ / 3, $\epsilon$ in {0.0 (ERM), 0.01 to 5.0 (L2), 0.5/255 to 8.0/255 (L∞)}
 - **Data Augmentation**: Random resized crop (224x224), random horizontal flip, ImageNet normalization
-- **Distributed Training**: Multi-GPU with torchrun and DDP
+- **Distributed Training**: Multi-GPU with torchrun and DDP (8x NVIDIA GeForce RTX 3090 GPUs)
 
 ### Downstream Transfer Evaluation
 - **Datasets**: CIFAR-10, CIFAR-100
@@ -65,6 +65,10 @@ Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for dif
 Notes:
 - Results are reported as top-1 transfer accuracy (%) on each downstream dataset and transfer mode.
 - The first table shows perturbation magnitudes for L∞ adversarial training (scaled to the image range). The second table reports a broader set of robustness parameters for L2 adversarial training.
+
+## Key Findings
+
+Adversarial training significantly improves model transfer performance on downstream tasks, for both L2 and L∞ norms. Compared to L∞, L2 adversarial training achieves higher maximum transfer performance on downstream tasks, particularly in fixed-feature transfer mode.
 
 ## Dependencies
 
