@@ -8,9 +8,28 @@ torchrun --nproc_per_node=8 AT.py \
     --arch resnet50 \
     --norm l2 \
     --epsilon 0.5 \
-    --batch-size 256 \
+    --batch-size 512 \
     --num-workers 8 \
-    --save-dir ./ckpts_resnet50_l2_eps0_5
+    --save-dir ./ckpts/ckpts_resnet50_l2_eps3_0
+"""
+
+"""
+torchrun = 为分布式训练准备运行环境的进程启动器
+
+torchrun --nproc_per_node=8 AT.py ...
+      ↓
+torchrun 启 8 个进程
+      ↓
+给每个进程设置环境变量
+      ↓
+每个进程运行 AT.py
+      ↓
+init_process_group 读取环境变量
+      ↓
+NCCL 建立 GPU 通信
+      ↓
+DDP 同步梯度
+
 """
 
 import argparse
@@ -75,30 +94,110 @@ def get_loaders(data_root: str,
         transforms.ToTensor(),
     ])
 
+    """
+    ImageFolder 是最基础、最通用的图像分类数据集封装, 负责三件事:
+    1. 按目录结构自动生成标签
+    2. 读取图片文件
+    3. 应用 transform
+    目录结构要求:
+    train/
+        ├── class_0/
+        │    ├── img1.jpg
+        │    ├── img2.jpg
+        ├── class_1/
+        │    ├── img3.jpg
+        │    ├── img4.jpg
+        |    ...
+    val/
+        ├── class_0/
+        │    ├── img5.jpg
+        │    ├── img6.jpg
+        ├── class_1/
+        │    ├── img7.jpg
+        │    ├── img8.jpg
+        |    ...
+    其中 class_0, class_1 是类别名, 可以是任意字符串
+    每个子目录 = 一个类别, 标签由字母顺序自动编号 (class_0 → 0, class_1 → 1)
+    __getitem__(idx) 返回: (image_tensor, class_index)
+    ImageFolder 不做 batching、不做 shuffle、不做并行, 它只是一个 "样本集合 + 取样规则"
+    ImageFolder 并没有加载数据或者读取任何图片, 只是扫描目录、记录文件路径 + label
+    ImageFolder 不会做 transform, 只有在 dataset[index] 被调用时, transform 才会被真正执行
+    例如, ImageFolder 的真实内部逻辑可能是这样的:
+    self.samples = [
+    ("/path/img1.jpg", 0),
+    ("/path/img2.jpg", 3),
+    ...
+    ]
+    self.transform = train_tf
+    """
+
     train_set = datasets.ImageFolder(os.path.join(data_root, "train"),
                                      transform=train_tf)
     val_set = datasets.ImageFolder(os.path.join(data_root, "val"),
                                    transform=val_tf)
+    
+    """
+    不使用 DDP 时的普通 DataLoader 流程:
+    Dataset (indices 0…N-1)
+    ↓
+    Sampler (Sequential / Random indices)
+    ↓
+    DataLoader
+    ↓
+    Batch
 
+    使用 DDP 时的 DataLoader 流程:
+    Dataset (indices 0…N-1)
+    ↓
+    DistributedSampler (按 rank 切分)
+    ↓
+    DataLoader (每个进程一个)
+    ↓
+    Batch (不同进程之间互不相同)
+
+    更具体地, DistributedSampler 的作用如下:
+    1. 根据 shuffle=True or False 生成一个全局 Random or Sequential 的 indices
+    2. 根据 drop_last=True or False 决定对上述 indices 是做 truncate 还是 padding
+    3. 所有进程看到同一份经过 shuffle/drop_last=True or False 和 indices
+    4. 每个进程根据 world_size 和自己的 rank, 取出对应的子集 indices
+    5. DataLoader 根据每个进程自己的子集 indices 取数据, 后续再构建 batch
+    """
+
+    # Sampler 不取数据, 不知道 batch_size, 只负责 index 顺序
     train_sampler = distributed.DistributedSampler(
         train_set, num_replicas=world_size, rank=rank, shuffle=True, drop_last=False
     )
-    # 验证集可以用 DistributedSampler 也可以只在 rank0 上 eval;
-    # 这里用 DistributedSampler, 所有 rank 共同算, 然后聚合
     val_sampler = distributed.DistributedSampler(
         val_set, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False
     )
+
+    """
+    DataLoader + num_workers 在做什么 ?
+    1. 从 sampler 拿到一个 index
+    2. 用 index 查文件路径
+    3. 从磁盘读取 JPEG
+    4. CPU 解码 JPEG → PIL / ndarray
+    5. 执行 transform (crop / flip / normalize)
+    6. 转成 torch.Tensor (CPU)
+    7. 返回给主进程
+    其中3-6 步可以并行加速 (num_workers > 0)
+    另外 DataLoader 还负责把多个样本堆叠成 batch
+    以上所有操作都在 CPU 上完成, DataLoader 不会自动搬数据到 GPU
+    需要在训练循环里手动把数据搬到 GPU (x = x.cuda())
+    这样设计是为了最大化 CPU 和 GPU 的利用率
+    让 CPU 在准备数据时, GPU 可以并行计算, 反之亦然
+    """
 
     train_loader = DataLoader(train_set,
                               batch_size=batch_size,
                               sampler=train_sampler,
                               num_workers=num_workers,
-                              pin_memory=False)
+                              pin_memory=True)
     val_loader = DataLoader(val_set,
                             batch_size=batch_size,
                             sampler=val_sampler,
                             num_workers=num_workers,
-                            pin_memory=False)
+                            pin_memory=True)
     return train_loader, val_loader, train_sampler, val_sampler
 
 
@@ -213,11 +312,33 @@ def main():
     args = parser.parse_args()
 
     # DDP 初始化
+    # 初始化进程通信环境, 建立 rank, world_size, 通信 backend (NCCL)
     dist.init_process_group(backend="nccl")
+    # 获取每个进程的本地 GPU id, local_rank 是环境变量, 由 torchrun 自动设置, 通过 os.environ 获取
     local_rank = int(os.environ["LOCAL_RANK"])
+    # 强制当前进程只使用 local_rank 对应的那一张 GPU
     torch.cuda.set_device(local_rank)
+    # 分布式通信系统中的全局编号 (rank) 以及总进程数 (world_size)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    """
+    backend = 分布式进程之间如何通信的底层实现方式
+    在 PyTorch 分布式里, backend 决定三件事：
+    1. 进程如何发现彼此
+    2. 张量如何在进程间传输
+    3. 集合通信 (reduce / broadcast / gather / scatter 等)怎么实现
+    可以把 backend 理解为: DDP 用的通信协议 + 底层传输工具
+
+    backend   适用场景          特点           
+    nccl      多 GPU            GPU <--> GPU, 最快 
+    gloo      CPU 或少量 GPU    通用，但慢        
+    mpi       HPC / MPI 环境    依赖 MPI       
+
+    NCCL (NVIDIA Collective Communications Library) 是 NVIDIA 提供的 GPU 通信库
+    专门优化了 GPU 之间的数据传输和集合通信操作, 在多 GPU训练中性能最好。
+    但 NCCL 只能在 GPU 上运行, 不支持纯 CPU 环境
+    """
 
     if rank == 0:
         os.makedirs(args.save_dir, exist_ok=True)
