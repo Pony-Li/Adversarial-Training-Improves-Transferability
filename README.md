@@ -20,7 +20,7 @@ The experimental results will help understand how adversarial training affects m
 ### ImageNet Pre-training
 - **Models**: ResNet-18, ResNet-50
 - **Training Setup**: 90 epochs, SGD optimizer with initial learning rate 0.1, momentum 0.9, weight decay 1e-4, learning rate decay at epochs 30 and 60 with gamma 0.1
-- **Adversarial Training**: PGD attacks with 3 steps, alpha = 2 * epsilon / 3, epsilon in {0.0 (ERM), 0.5 (L2), 4/255 (L∞)}
+- **Adversarial Training**: PGD attacks with 3 steps, alpha = 2 * $\epsilon$ / 3, $\epsilon$ in {0.0 (ERM), 0.01 to 5.0 (L2), 0.5/255 to 8.0/255 (L∞)}
 - **Data Augmentation**: Random resized crop (224x224), random horizontal flip, ImageNet normalization
 - **Distributed Training**: Multi-GPU with torchrun and DDP
 
@@ -34,12 +34,12 @@ The experimental results will help understand how adversarial training affects m
 
 ## Results — Transfer Accuracy (tables)
 
-Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for different robustness parameters (\varepsilon). Values are percentages; bolded entries indicate the best value in the row.
+Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for different robustness parameters ($\epsilon$). Values are percentages; bolded entries indicate the best value in the row.
 
-#### Transfer accuracy vs. small perturbation magnitudes (scaled to 1/255)
+#### Transfer accuracy for L∞ adversarial training (small perturbation magnitudes, scaled to 1/255)
 
 | Dataset | Transfer Type | Model | 0.0 | 0.5/255 | 1.0/255 | 2.0/255 | 4.0/255 | 8.0/255 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
+|---|---|---|---:|---:|---:|---:|---:|---:|
 | CIFAR-10 | Full-network | ResNet-18 | 95.81 | 96.35 | 96.68 | 96.73 | **96.84** | 96.47 |
 | CIFAR-10 | Full-network | ResNet-50 | 96.98 | 97.54 | 97.76 | 97.61 | **97.76** | 97.59 |
 | CIFAR-10 | Fixed-feature | ResNet-18 | 73.72 | 85.98 | 88.42 | 89.36 | **89.42** | 88.43 |
@@ -49,7 +49,7 @@ Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for dif
 | CIFAR-100 | Fixed-feature | ResNet-18 | 51.52 | 65.67 | 68.24 | **70.23** | 69.60 | 67.78 |
 | CIFAR-100 | Fixed-feature | ResNet-50 | 54.22 | 68.76 | 72.97 | 73.97 | **74.62** | 72.94 |
 
-#### Transfer accuracy vs. a wider range of robustness parameters
+#### Transfer accuracy for L2 adversarial training (wider range of robustness parameters)
 
 | Dataset | Transfer Type | Model | 0 | 0.01 | 0.03 | 0.05 | 0.1 | 0.25 | 0.5 | 1.0 | 3.0 | 5.0 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -64,7 +64,7 @@ Below are the reproduced transfer-accuracy tables (CIFAR-10 / CIFAR-100) for dif
 
 Notes:
 - Results are reported as top-1 transfer accuracy (%) on each downstream dataset and transfer mode.
-- The first table shows perturbation magnitudes scaled to the image range (1/255). The second table reports a broader set of robustness parameters used in supplementary experiments.
+- The first table shows perturbation magnitudes for L∞ adversarial training (scaled to the image range). The second table reports a broader set of robustness parameters for L2 adversarial training.
 
 ## Dependencies
 
