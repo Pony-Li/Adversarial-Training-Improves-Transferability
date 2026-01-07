@@ -60,8 +60,8 @@ PGD_STEPS = 3  # 训练时 PGD 迭代次数
 # Normalization wrapper
 class NormalizedModel(nn.Module):
     """
-    把 ImageNet mean/std 集成到模型内部, 保证输入保持在 [0,1], 
-    满足 torchattacks 的要求。
+    把 ImageNet mean/std 集成到模型内部, 
+    保证输入保持在 [0,1], 满足 torchattacks 的要求
     """
 
     def __init__(self, model: nn.Module):
@@ -336,7 +336,7 @@ def main():
     mpi       HPC / MPI 环境    依赖 MPI       
 
     NCCL (NVIDIA Collective Communications Library) 是 NVIDIA 提供的 GPU 通信库
-    专门优化了 GPU 之间的数据传输和集合通信操作, 在多 GPU训练中性能最好。
+    专门优化了 GPU 之间的数据传输和集合通信操作, 在多 GPU训练中性能最好
     但 NCCL 只能在 GPU 上运行, 不支持纯 CPU 环境
     """
 
@@ -356,9 +356,66 @@ def main():
     # 模型 + Normalization
     backbone = build_backbone(args.arch)
     norm_model = NormalizedModel(backbone).cuda()
+
+    """
+    DDP 不是一个简单的 wrapper, 它在这里完成了 5 件关键的系统级工作
+    1. 记录分布式上下文 (rank / world_size / process group):
+       前面已经调用过 dist.init_process_group(backend="nccl"),
+       之后, DDP 在构造时会读取当前进程的 rank, world_size 以及所属的 process_group 等信息,
+       把这些信息注册到 DDP 实例中, 从而决定了当前进程属于哪一个并行副本, 后续梯度要和谁同步
+    2. 绑定模型到单 GPU 单进程:
+       device_ids 和 output_device 共同保证了当前进程只使用 id=local_rank 的 GPU
+       具体影响 forward 的输入必须在这张 GPU,输出 Tensor 也在这张 GPU,
+       backward 的梯度同样也只在这张 GPU 上产生
+    3. 对模型参数做一次初始广播 (broadcast):
+       DDP 在初始化时会隐式执行一次广播操作,
+       把 rank 0 进程的模型参数广播到所有其他进程,
+       保证所有进程的模型参数在训练开始时是一致的
+    4. 给每一个 Parameter 注册 autograd hook:
+       这是 DDP 的核心机制, 对于模型中每一个 nn.Parameter 类型的 tensor,
+       DDP 会注册一个 backward hook, 当这个参数在反向传播过程中 .grad 计算完成后,
+       这个 hook 会自动触发并执行 all-reduce操作, 
+       把当前进程的梯度和其他进程的梯度汇总, 从而保证各进程的参数更新一致
+    5. 建立 NCCL 通信器 (communicator):
+       为当前进程组创建 NCCL communicator 决定通信拓扑, bucket 大小和 all-reduce 调度方式
+    """
+
+    """
+    1. 不使用 DDP 时反向传播的时间轴:
+    loss.backward()
+    ↓
+    参数 A 的梯度算完 → A.grad = grad_A_local
+    参数 B 的梯度算完 → B.grad = grad_B_local
+    ...
+    ↓
+    optimizer.step()  用的是本地梯度
+
+    2. 使用 DDP 时反向传播的时间轴:
+    loss.backward()
+    ↓
+    参数 A 的梯度算完
+    ↓
+    触发 hook: all_reduce(A.grad)
+    ↓
+    A.grad = 全进程平均梯度
+    ↓
+    参数 B 的梯度算完
+    ↓
+    触发 hook: all_reduce(B.grad)
+    ↓
+    B.grad = 全进程平均梯度
+    ...
+    ↓
+    optimizer.step()  # 用的是全局梯度
+
+    DDP 在 backward 中途做 all-reduce, 而不是等所有梯度都算完再 all-reduce,
+    如果等所有梯度算完再通信, 所有通信都堆在最后, GPU 计算与通信无法重叠, 性能差
+    DDP 边算边同步, 后面层在算梯度, 前面层可能仍在通信, 通信与计算重叠
+    这是 DDP 比 DP 快得多的根本原因之一
+    """
     model_ddp = DDP(norm_model, device_ids=[local_rank], output_device=local_rank)
 
-    # 优化器 / scheduler (论文设定) 
+    # optimizer / scheduler (按照原论文设定) 
     optimizer = torch.optim.SGD(
         model_ddp.parameters(),
         lr=INIT_LR,
@@ -400,7 +457,7 @@ def main():
     else:
         atk = None
         if rank == 0:
-            print("epsilon=0.0 -> 标准 ERM 训练, 无对抗样本。")
+            print("epsilon=0.0 -> 标准 ERM 训练, 无对抗样本")
 
     # 训练主循环
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
