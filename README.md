@@ -98,7 +98,7 @@ Adversarial training significantly improves model transfer performance on downst
    Example commands:
    ```bash
    # Adversarial training (using 4 GPUs)
-   CUDA_VISIBLE_DEVICES=0,1,2,3 NUM_GPUS=4 ./scripts/run_experiment.sh train --data-root /path/to/imagenet --arch resnet50 --norm l2 --epsilon 3.0 --batch-size 512 --num-workers 8 --save-dir ./ckpts/
+   CUDA_VISIBLE_DEVICES=0,1,2,3 NUM_GPUS=4 ./scripts/run_experiment.sh train --data-root /path/to/imagenet --arch resnet50 --norm l2 --epsilon 3.0 --batch-size 256 --num-workers 8 --save-dir ./ckpts/
 
    # Transfer evaluation (using 4 GPUs)
    CUDA_VISIBLE_DEVICES=0,1,2,3 NUM_GPUS=4 ./scripts/run_experiment.sh finetune --data-root /path/to/datasets --dataset CIFAR10 --arch resnet50 --ckpt /path/to/ckpt.pth --mode fixed --batch-size 64 --num-workers 4 --save-dir ./transfer_ckpts
