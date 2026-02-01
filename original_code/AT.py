@@ -125,7 +125,7 @@ def get_loaders(data_root: str,
     例如, ImageFolder 的真实内部逻辑可能是这样的:
     self.samples = [
     ("/path/img1.jpg", 0),
-    ("/path/img2.jpg", 3),
+    ("/path/img2.jpg", 0),
     ...
     ]
     self.transform = train_tf
@@ -158,9 +158,9 @@ def get_loaders(data_root: str,
     更具体地, DistributedSampler 的作用如下:
     1. 根据 shuffle=True or False 生成一个全局 Random or Sequential 的 indices
     2. 根据 drop_last=True or False 决定对上述 indices 是做 truncate 还是 padding
-    3. 所有进程看到同一份经过 shuffle/drop_last=True or False 和 indices
-    4. 每个进程根据 world_size 和自己的 rank, 取出对应的子集 indices
-    5. DataLoader 根据每个进程自己的子集 indices 取数据, 后续再构建 batch
+    3. 所有进程看到同一份经过 shuffle/drop_last=True or False 的 indices
+    4. 每个进程根据 world_size 和自己的 rank, 取出对应的 indices 子集
+    5. DataLoader 根据每个进程自己的 indices 子集取数据, 后续再构建 batch
     """
 
     # Sampler 不取数据, 不知道 batch_size, 只负责 index 顺序
@@ -314,13 +314,6 @@ def main():
     # DDP 初始化
     # 初始化进程通信环境, 建立 rank, world_size, 通信 backend (NCCL)
     dist.init_process_group(backend="nccl")
-    # 获取每个进程的本地 GPU id, local_rank 是环境变量, 由 torchrun 自动设置, 通过 os.environ 获取
-    local_rank = int(os.environ["LOCAL_RANK"])
-    # 强制当前进程只使用 local_rank 对应的那一张 GPU
-    torch.cuda.set_device(local_rank)
-    # 分布式通信系统中的全局编号 (rank) 以及总进程数 (world_size)
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
 
     """
     backend = 分布式进程之间如何通信的底层实现方式
@@ -338,6 +331,21 @@ def main():
     NCCL (NVIDIA Collective Communications Library) 是 NVIDIA 提供的 GPU 通信库
     专门优化了 GPU 之间的数据传输和集合通信操作, 在多 GPU训练中性能最好
     但 NCCL 只能在 GPU 上运行, 不支持纯 CPU 环境
+    """
+
+    # 获取每个进程的本地 GPU id, local_rank 是环境变量, 由 torchrun 自动设置, 通过 os.environ 获取
+    local_rank = int(os.environ["LOCAL_RANK"])
+    # 强制当前进程只使用 local_rank 对应的那一张 GPU
+    torch.cuda.set_device(local_rank)
+    # 分布式通信系统中的全局编号 (rank) 以及总进程数 (world_size)
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+
+    """
+    local_rank 和 rank 不是同一个东西
+    local_rank: 由 torchrun 自动注入的环境变量, 表示当前进程在本节点内 (这台机器上) 的 GPU 编号
+    rank: 由 init_process_group 之后确定, 表示整个分布式作业中的全局进程编号
+    在单机多卡时, 两者数值通常相同, 但语义完全不同; 在多机多卡时, 两者一定不同
     """
 
     if rank == 0:
